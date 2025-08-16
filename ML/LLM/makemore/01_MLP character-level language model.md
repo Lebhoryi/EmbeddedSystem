@@ -129,6 +129,56 @@ lrs = 10**lre
    5. 选择合适的学习率来更新权重的参数, `p.data += -lr * p.grad`
    6. 记录训练步数和损失对数值，以便于分析训练过程
 
+## 验证网络
+
+分别在完整的训练集、验证集和测试集上计算 loss，检查表现是否接近。
+
+```python
+# training loss 
+emb = C[Xtr] # (32, 3, 2)
+print(emb.shape)
+h = torch.tanh(emb.view(-1, 30) @ W1 + b1) # (32, 100)
+logits = h @ W2 + b2 # (32, 27)
+loss = F.cross_entropy(logits, Ytr)
+loss
+```
+
+torch.Size([182580, 3, 10])
+tensor(2.3660, grad_fn=<NllLossBackward0>)
+
+```python
+# validation loss
+emb = C[Xdev] # (32, 3, 2)
+print(emb.shape)
+print(emb.view(-1, 30).shape)
+h = torch.tanh(emb.view(-1, 30) @ W1 + b1) # (32, 100)
+logits = h @ W2 + b2 # (32, 27)
+loss = F.cross_entropy(logits, Ydev)
+loss
+```
+
+torch.Size([22767, 3, 10])
+torch.Size([22767, 30])
+tensor(2.3831, grad_fn=<NllLossBackward0>)
+
+```python
+# test loss
+emb = C[Xte] # (32, 3, 2)
+print(emb.shape)
+h = torch.tanh(emb.view(-1, 30) @ W1 + b1) # (32, 100)
+logits = h @ W2 + b2 # (32, 27)
+# cross entropy 默认会对所有样本的损失取平均，反映了模型在整个测试集上的整体表现
+print(logits.shape)
+print(Yte.shape)
+loss = F.cross_entropy(logits, Yte)
+loss
+```
+
+torch.Size([22799, 3, 10])
+torch.Size([22799, 27])
+torch.Size([22799])
+tensor(2.3966, grad_fn=<NllLossBackward0>)
+
 ## 嵌入矩阵可视化
 
 通过 PCA（主成分分析）是一种线性降维的方法，可以把高维数据投影到方差最大的两个方向上，尽量保留原始数据的主要结构，这样二维图能更好地反应高维空间的主要分布。
