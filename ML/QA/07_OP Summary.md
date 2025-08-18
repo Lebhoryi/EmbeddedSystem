@@ -307,7 +307,7 @@ hₜ₋₁──▶│             │
    $$
 4. **最终隐藏状态** \( $h_t$ \)：
    $$
-   h_t = (1 - z_t) \odot h_{t-1} + z_t \odot \tilde{h}_t
+   h_t = (1 - z_t) \odot h_{t-1} + z_t \odot \tilde{h}_t
    $$
 
 ---
@@ -535,3 +535,155 @@ pcd_tree = o3d.geometry.KDTreeFlann(pcd)
 
 **KNN算子**是“找最近邻”的基础工具，既可用于传统机器学习，也广泛用于点云、图神经网络、检索等深度学习场景。  
 主流框架（sklearn、Open3D、PyTorch3D、FAISS等）均有高效实现。
+
+# AllREDUCE
+
+“AllReduce” 和 “Reduce + Broadcast” 是分布式计算（尤其是深度学习训练中的多机多卡训练）中常见的通信算子（communication primitives），主要用于在多个进程（通常是多个 GPU 或多个节点上的 GPU）之间高效地同步数据（通常是梯度或模型参数）。下面分别解释它们的含义和用途：
+
+------
+
+## 一、AllReduce
+
+### 定义：
+
+**AllReduce 是一种集体通信操作（collective communication operation）**，它的功能是：
+
+> **将多个进程（比如多个 GPU）上的某个数据（如张量）分别进行归约（Reduce，通常是求和、取平均等），然后将归约后的结果广播（Broadcast）给所有参与通信的进程。**
+
+换句话说，AllReduce 做了两件事：
+
+1. **Reduce（归约）**：把多个进程上的同一份数据（比如梯度张量）合并（比如求和）成一个结果；
+2. **Broadcast（广播）**：把这个合并后的结果再发送（分发）给所有参与通信的进程。
+
+最终，**每个进程都拥有相同的归约结果**。
+
+### 常见的归约操作包括：
+
+- SUM（求和）
+- AVERAGE（平均，通常是先求和再除以进程数）
+- MAX / MIN 等
+
+### 在深度学习中的应用：
+
+在 **分布式训练（如 Data Parallel 或 Model Parallel）** 中，每个 GPU 会计算自己那部分数据的梯度。为了更新模型参数，所有 GPU 的梯度需要保持一致，因此需要对这些梯度进行同步。
+
+最常用的同步方式就是 **对所有 GPU 上的梯度进行求和（或平均），然后每个 GPU 都使用这个统一的梯度来更新参数**。这就是 AllReduce 的典型应用场景。
+
+### 常见的 AllReduce 实现方式：
+
+- **Ring-AllReduce**（如 NCCL 中的高效实现）
+- **Tree-AllReduce**
+- **Recursive Halving and Doubling**
+
+------
+
+## 二、Reduce + Broadcast
+
+### 定义：
+
+这是将 **Reduce 和 Broadcast 两个操作分开执行** 的通信模式：
+
+1. **Reduce 阶段**：多个进程将各自的数据发送到一个指定的进程（比如 rank 0），由该进程对所有数据进行归约（如求和或平均）；
+2. **Broadcast 阶段**：归约后的结果由这个指定的进程广播给其他所有进程。
+
+最终，**所有进程也都得到了相同的归约结果**，和 AllReduce 的最终效果是一样的。
+
+### 与 AllReduce 的区别：
+
+- **AllReduce 是一个原子的、单一的集体通信操作**，内部实现可能高效地融合了 Reduce 和 Broadcast，通常性能更优；
+- **Reduce + Broadcast 是两个分开的操作**，先做 Reduce（通常只由某个 rank 接收并归约），再做 Broadcast（将结果发给所有 rank）。逻辑上等价于 AllReduce，但通信模式可能不如 AllReduce 高效。
+
+------
+
+## 三、为什么这些算子重要？
+
+在 **多 GPU / 多节点训练**（如使用 PyTorch 的 `DistributedDataParallel` 或 TensorFlow 的 `MirroredStrategy` / `MultiWorkerMirroredStrategy`）中，各个设备独立计算梯度后，必须同步这些梯度才能正确更新模型参数。
+
+AllReduce（或 Reduce + Broadcast）就是用来实现这种 **梯度同步** 的关键通信操作。
+
+------
+
+## 四、常见框架中的支持
+
+- **NCCL (NVIDIA Collective Communications Library)**：为 GPU 之间提供高效的 AllReduce 实现，被 PyTorch、TensorFlow 等广泛使用；
+
+- **MPI (Message Passing Interface)**：在 HPC 领域常用，也支持 AllReduce 和 Reduce/Broadcast 操作；
+
+- 
+
+  深度学习框架
+
+  ：
+
+  - **PyTorch**：`torch.distributed.all_reduce()`，`torch.distributed.reduce()`，`torch.distributed.broadcast()`
+  - **TensorFlow**：通过 `CollectiveOps` 实现类似功能
+  - **Horovod**：基于 MPI 或 NCCL，对 AllReduce 做了高度优化
+
+------
+
+## 总结对比表：
+
+| 操作                   | 是否单一操作     | 功能描述                                                     | 结果                       | 典型用途                                   |
+| ---------------------- | ---------------- | ------------------------------------------------------------ | -------------------------- | ------------------------------------------ |
+| **AllReduce**          | ✅ 是             | 所有进程对一份数据进行归约（如求和/平均），然后所有进程都得到归约结果 | 所有进程拥有相同的归约结果 | 分布式训练中的梯度同步                     |
+| **Reduce + Broadcast** | ❌ 否（分为两步） | 先由部分或一个进程对数据进行归约，再广播给所有进程           | 所有进程拥有相同的归约结果 | 功能上等同于 AllReduce，但通信模式可能不同 |
+
+------
+
+## 举个例子（以梯度同步为例）：
+
+假设你有 4 块 GPU，每块 GPU 在训练时都计算了属于自己的梯度张量 G₁, G₂, G₃, G₄。
+
+为了更新模型参数，你需要：
+
+- 将这 4 个梯度 **加起来（或者取平均）** → 得到一个统一的梯度 G_total
+- 然后 **每个 GPU 都用这个 G_total 来更新自己的模型**
+
+→ 这就是 AllReduce 或 Reduce + Broadcast 的作用！
+
+# KVCACHE
+
+**KVcache 算子**（Key-Value Cache Operator）是大语言模型（LLM）推理过程中用于优化注意力机制计算的关键组件，主要作用是**缓存历史键（Key）和值（Value）矩阵**，避免重复计算，从而显著提升自回归生成（如文本逐句生成）的效率。以下从背景、作用、工作原理和优化意义等方面详细说明：
+
+### **1. 背景：为什么需要 KVcache？**
+
+在大语言模型（如 GPT、LLaMA 等）的 Transformer 架构中，自注意力（Self-Attention）层的计算复杂度与序列长度的平方成正比（$O(n^2)$）。当模型生成文本时（例如逐词生成“今天天气很好，我打算...），每一步都需要将当前生成的 token 与之前所有已生成的 token 进行注意力计算。若不缓存历史信息，每次生成新 token 时都需重新计算所有历史 token 的 Key 和 Value，会导致计算量爆炸式增长（尤其是长文本生成时），无法满足实时性需求。
+
+**KVcache 的核心思想**：首次计算某个 token 的 Key 和 Value 后，将其缓存起来；后续生成新 token 时，直接复用缓存的 Key 和 Value，仅需计算当前 token 的 Key 和 Value 并追加到缓存中，从而将注意力计算的时间复杂度从 $O(n^2)$ 降至 $O(n)$（$n$ 为当前序列长度）。
+
+### **2. KVcache 的结构与工作原理**
+
+#### **结构**
+
+KVcache 通常以张量（Tensor）形式存储，每个 token 对应一组 Key（K）和 Value（V）矩阵。假设模型的注意力头数为 $h$，每个头的维度为 $d_k$（通常 $d_k = d_{\text{model}}/h$，$d_{\text{model}}$ 为模型总维度），当前已生成的序列长度为 $m$，则 KVcache 的典型形状为：
+
+- Key 缓存：`(batch_size, h, m, d_k)`
+- Value 缓存：`(batch_size, h, m, d_k)`
+
+其中，`batch_size` 是批量处理的样本数，`h` 是注意力头数，`m` 是已生成的 token 数（序列长度），`d_k` 是每个头的维度。
+
+#### **工作流程**
+
+以自回归生成第 $m+1$ 个 token 为例：
+
+1. **初始阶段（生成第 1 个 token）**：输入初始提示（Prompt），计算所有提示 token 的 Key 和 Value，并将它们存入 KVcache。此时缓存长度 $m$ 等于提示长度。
+2. **生成后续 token**：每次生成新 token 时，仅计算当前输入（通常是前一个生成的 token 的嵌入）的 Key（$K_{\text{new}}$）和 Value（$V_{\text{new}}$），并将它们追加到 KVcache 的序列维度（即 $m$ 增加 1）。
+3. **注意力计算**：生成新 token 的注意力权重时，查询（Query）仅与 KVcache 中所有历史 Key（包括刚追加的 $K_{\text{new}}$）相乘，而值的聚合则基于缓存中所有历史 Value（包括 $V_{\text{new}}$）。
+
+### **3. KVcache 算子的关键作用**
+
+- **降低计算开销**：避免重复计算历史 token 的 Key 和 Value，将每次生成的时间复杂度从 $O(m^2)$ 降至 $O(m)$（$m$ 为当前序列长度）。
+- **减少内存占用**：通过复用缓存，无需存储中间状态的重复计算结果，降低内存消耗。
+- **支持长序列生成**：是长文本生成（如对话、文章写作）、实时交互（如聊天机器人）等场景的核心优化技术，确保生成速度满足实时性要求。
+
+### **4. 优化与扩展**
+
+实际应用中，KVcache 算子还会结合以下优化技术进一步提升效率：
+
+- **量化（Quantization）**：将浮点型的 Key/Value 缓存转换为低精度（如 FP16、INT8），减少内存占用和计算耗时（需平衡精度损失）。
+- **分块缓存（Chunked Cache）**：对超长序列的缓存进行分块存储，按需加载，避免一次性占用过多内存。
+- **动态缓存管理**：根据序列长度动态调整缓存大小，或对过期的缓存（如超出上下文窗口的 token）进行清理，平衡性能与内存。
+
+### **总结**
+
+KVcache 算子是大语言模型推理的“效率引擎”，通过缓存历史 Key 和 Value 矩阵，显著降低了自回归生成的复杂度，使得模型能够高效处理长序列和实时交互任务。它是支撑 GPT、LLaMA 等模型落地应用的关键技术之一。
