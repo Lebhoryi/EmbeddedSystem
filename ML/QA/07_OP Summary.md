@@ -952,3 +952,121 @@ $$
 - MLA 与 **FlashAttention、PagedAttention、KV Cache 优化** 的关系
 
 # PA (Paged Attention)
+
+**Page Attention（页面注意力）** 是大语言模型（如 **Mistral、DeepSeek、Llama 等**）在处理 **长上下文（long-context）** 时采用的一种高效注意力机制，主要用于解决传统 Transformer 模型在处理超长序列（比如几万甚至上百万 token）时计算和内存开销过大的问题。
+
+为了更好地理解 **Page Attention**，我们需要先回顾一下传统的 **注意力机制（Attention）** 和它在大模型长上下文场景下的瓶颈，然后再深入解释 Page Attention 的原理与优势。
+
+------
+
+## 一、传统 Attention 的问题
+
+在标准的 Transformer 模型中，**Self-Attention（自注意力）** 是其核心计算模块。对于一个输入序列（比如 token 序列），每个 token 都需要与其他所有 token 计算注意力权重，以决定在当前位置生成内容时应该“关注”哪些位置的上下文信息。
+
+### 问题：
+
+- **计算复杂度**：标准 Attention 的计算复杂度是 **O(n²)**，其中 n 是序列长度。也就是说，如果你的输入有 32,000 个 token，那么计算量大约是 32,000 × 32,000 = 1,024,000,000 次操作，非常昂贵。
+- **内存占用**：Attention 需要存储一个 n×n 的注意力权重矩阵或者 Key-Value 缓存，内存占用也是 O(n²)，当 n 很大时，显存根本不够用。
+
+因此，当我们要处理 **超长文本（比如整本书、长会议记录、代码库等）** 时，传统的注意力机制就变得不可行。
+
+------
+
+## 二、Page Attention 是什么？
+
+**Page Attention** 是一种用于高效处理 **超长上下文** 的注意力机制，其核心思想是：
+
+> **将长序列的 Key 和 Value（注意力中的 K 和 V）按照一定大小分块（称为“Page”或者“Slot”），然后只对当前需要的 Page 进行计算，避免对整个序列的 K/V 全部加载和计算。**
+
+它最早由像 **Mistral、DeepSeek、vLLM、FlashAttention** 等模型或优化库提出或采用，是 **长上下文大模型推理优化的一种重要技术**。
+
+更具体地说，Page Attention 借鉴了操作系统中的 **虚拟内存分页（Paging）** 思想，把连续的 token 序列按照固定大小（比如 16 或 32 个 token 组成一个 Page）切分成多个块，每个块称为一个 **Page** 或 **Slot**，然后只加载当前需要的那部分 Page 的 Key 和 Value，而不是全部历史的 K/V。
+
+------
+
+## 三、Page Attention 的工作原理（简化版）
+
+假设我们有一个非常长的输入序列，比如 10 万个 token。传统方式会为这 10 万个 token 都计算并保存 K 和 V，占用巨大内存。而 Page Attention 则这样做：
+
+### 1. **分块（Paging）**
+
+- 将输入序列的 token 按照固定大小（比如每个 Page 包含 16 或 32 个 token）切分成多个 **Page（页）**。
+- 每个 Page 对应一组 Key 和 Value，称为该 Page 的 KV Cache。
+
+### 2. **稀疏访问（Sparse Access）**
+
+- 在生成新的 token 时，模型并不需要关心所有历史 token，而是主要关注最近的若干 token（局部性原理）。
+- 因此，Page Attention 只加载当前需要的那些 Page 的 K 和 V，而不是全部历史的 K/V。
+- 比如，当前新生成的 token 可能只需要参考最近几个 Page 的内容，远古的 Page 可以暂时不加载。
+
+### 3. **高效缓存管理**
+
+- Page Attention 通常配合一些高效的 KV Cache 管理策略，比如：
+  - **Sliding Window Attention（滑动窗口注意力）**：只计算最近 N 个 token 的注意力。
+  - **NVIDIA 的 FlashAttention / FlashAttention-2**：优化了 Attention 的显存访问模式，提高计算效率。
+  - **vLLM 的 PagedAttention**：是实际应用最为广泛的实现之一，它将 KV Cache 按页管理，支持动态调度和高效复用。
+
+------
+
+## 四、Page Attention 的优势
+
+| 特性           | 传统 Attention         | Page Attention                       |
+| -------------- | ---------------------- | ------------------------------------ |
+| 计算复杂度     | O(n²)                  | 接近 O(n) 或 O(n × w)，w 是窗口大小  |
+| 内存占用       | O(n²)                  | O(n) 或更优，按需加载                |
+| 支持上下文长度 | 有限（通常几千到几万） | 可支持超长（几十万甚至上百万 token） |
+| 实现复杂度     | 简单                   | 较复杂，需要分页、调度等机制         |
+| 推理效率       | 低（长文本时）         | 高（尤其适合推理阶段）               |
+
+------
+
+## 五、实际应用中的 Page Attention
+
+目前，Page Attention 技术已经在多个大模型推理优化框架中得到了广泛应用，例如：
+
+### 1. **vLLM 的 PagedAttention**
+
+- vLLM 是一个高性能的大模型推理引擎，它实现了所谓的 **PagedAttention** 机制。
+- 它将 KV Cache 按固定大小的 “Page” 来管理，类似于虚拟内存的页式管理，支持高效调度和复用。
+- 支持 **连续生成、长上下文、高效显存利用**，是当前很多大模型推理服务的首选优化方案。
+
+### 2. **Mistral / DeepSeek 等模型的长上下文支持**
+
+- 这些模型在推理时可能采用类似 Page Attention 的策略来支持 **32k、64k 甚至 128k token 的上下文窗口**。
+- 通过分块和稀疏注意力，它们可以在不显著牺牲效果的前提下，处理超长文本。
+
+### 3. **FlashAttention & FlashAttention-2**
+
+- 虽然不是严格意义上的 Page Attention，但它们通过优化 Attention 的显存访问模式，为 Page Attention 的高效实现提供了基础。
+- 很多 Page Attention 实现都会结合 FlashAttention 来进一步提升速度。
+
+------
+
+## 六、通俗类比：Page Attention 就像“书签 + 按需翻页”
+
+可以把 Page Attention 想象成你在阅读一本非常厚的书（比如一本 10 万页的小说）：
+
+- **传统方式（标准 Attention）**：你必须同时记住整本书的每一页内容，并在读当前页时去回顾全书每一页——非常累且不现实。
+- **Page Attention 方式**：你把书分成很多小章节（Page），每次只把当前需要的那几章加载到“内存”里（比如最近几章或相关章节），其他章节暂时放在“硬盘”上，等需要时再按需加载。这样既省力又高效。
+
+------
+
+## 七、总结
+
+**Page Attention 是一种用于高效处理超长序列的注意力机制优化技术，其核心思想是将长序列分块（Page），并仅对当前需要的块进行计算和缓存，从而显著降低计算复杂度和内存占用，使得大模型能够支持更长上下文的推理。**
+
+它通常结合以下技术一起使用，以进一步提升效果：
+
+- **分块管理（Paging）**
+- **稀疏注意力（Sparse Attention / Sliding Window）**
+- **高效 KV Cache 管理（如 vLLM 的 PagedAttention）**
+- **显存访问优化（如 FlashAttention）**
+
+------
+
+### 如果你感兴趣，还可以深入了解：
+
+- **vLLM 的 PagedAttention 实现原理**
+- **FlashAttention / FlashAttention-2**
+- **Sliding Window Attention vs. Global Attention**
+- **如何实现支持 100k+ 上下文的大模型推理**
