@@ -47,4 +47,6 @@ io_uring 支持批量提交和处理 I/O 请求，这进一步提升了其性能
 
 此外，io_uring 支持的操作类型非常丰富，不仅包括传统的文件 I/O 操作（如 read、write、open、close 等），还支持网络相关的系统调用，如 send、recv、accept、connect 等。这使得开发者可以使用 io_uring 来构建高性能的网络服务器和应用程序。在开发一个高并发的 Web 服务器时，可以使用 io_uring 来处理客户端的连接请求、数据接收和发送等操作，充分发挥其高性能和异步处理的优势。io_uring 还支持一些其他的系统调用，如文件系统的操作（如 fsync、fdatasync 等），为开发者提供了更强大的功能和更灵活的编程方式。
 
-### 
+## 参考文档
+
+https://mp.weixin.qq.com/s/7zVxYN3qwCgZL6QJ6AmKCw
