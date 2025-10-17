@@ -39,6 +39,15 @@ n = int(0.9*len(data)) # first 90% will be train, rest val
 train_data = data[:n]
 val_data = data[n:]
 
+print(train_data.shape)
+print(train_data[:10])
+print(val_data.shape)
+print(val_data[:10])
+print(decode(train_data[:10].tolist()))
+print(decode(val_data[:10].tolist()))
+
+# exit()
+
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
@@ -135,12 +144,10 @@ class Block(nn.Module):
         x = x + self.ffwd(self.ln2(x))
         return x
 
-# super simple bigram model
 class CharLanguageModel(nn.Module):
 
     def __init__(self):
         super().__init__()
-        # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
